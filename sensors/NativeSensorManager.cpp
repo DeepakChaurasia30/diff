@@ -27,7 +27,9 @@ OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
 IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------*/
 #include "NativeSensorManager.h"
+#include <inttypes.h>
 #include <unistd.h>
+#include <sys/endian.h>
 
 ANDROID_SINGLETON_STATIC_INSTANCE(NativeSensorManager);
 
@@ -237,9 +239,6 @@ int NativeSensorManager::initVirtualSensor(struct SensorContext *ctx, int handle
 		struct sensor_t info)
 {
 	CalibrationManager& cm(CalibrationManager::getInstance());
-	SensorRefMap *item;
-	struct SensorContext *ref;
-	unsigned int i;
 
 	*(ctx->sensor) = info;
 	if (cm.getCalAlgo(ctx->sensor) == NULL) {
@@ -284,7 +283,9 @@ const struct SysfsMap NativeSensorManager::node_map[] = {
 };
 
 NativeSensorManager::NativeSensorManager():
-	mSensorCount(0), mScanned(false), mEventCount(0), type_map(NULL), handle_map(NULL), fd_map(NULL)
+	mSensorCount(0), mScanned(false), mEventCount(0),
+	mCalibrationDataInitialized(false),
+	type_map(NULL), handle_map(NULL), fd_map(NULL)
 {
 	int i;
 
@@ -316,7 +317,6 @@ NativeSensorManager::~NativeSensorManager()
 	int number = getSensorCount();
 	struct listnode *node;
 	struct listnode *n;
-	struct SensorContext *ctx;
 	struct SensorRefMap *item;
 
 	for (i = 0; i < number; i++) {
@@ -324,22 +324,24 @@ NativeSensorManager::~NativeSensorManager()
 			delete context[i].driver;
 		}
 
-		if (!list_empty(&(context[i].listener))) {
-			list_for_each_safe(node, n, &context[i].listener) {
-				item = node_to_item(node, struct SensorRefMap, list);
-				if (item != NULL) {
-					list_remove(&item->list);
-					delete item;
+		if (node != NULL) {
+			if (!list_empty(&(context[i].listener))) {
+				list_for_each_safe(node, n, &context[i].listener) {
+					item = node_to_item(node, struct SensorRefMap, list);
+					if (item != NULL) {
+						list_remove(&item->list);
+						delete item;
+					}
 				}
 			}
-		}
 
-		if (!list_empty(&(context[i].dep_list))) {
-			list_for_each_safe(node, n, &context[i].dep_list) {
-				item = node_to_item(node, struct SensorRefMap, list);
-				if (item != NULL) {
-					list_remove(&item->list);
-					delete item;
+			if (!list_empty(&(context[i].dep_list))) {
+				list_for_each_safe(node, n, &context[i].dep_list) {
+					item = node_to_item(node, struct SensorRefMap, list);
+					if (item != NULL) {
+						list_remove(&item->list);
+						delete item;
+					}
 				}
 			}
 		}
@@ -360,14 +362,14 @@ void NativeSensorManager::dump()
 				context[i].data_fd,
 				context[i].is_virtual);
 
-		ALOGI("data_path=%s\nenable_path=%s\ndelay_ns:%lld\nenable=%d\n",
+		ALOGI("data_path=%s\nenable_path=%s\ndelay_ns:%" PRId64 "\nenable=%d\n",
 				context[i].data_path,
 				context[i].enable_path,
 				context[i].delay_ns,
 				context[i].enable);
 
 #if defined(SENSORS_DEVICE_API_VERSION_1_3)
-		ALOGI("minDelay=%d maxDelay=%d flags=%d\n",
+		ALOGI("minDelay=%d maxDelay=%ld flags=%lu\n",
 				context[i].sensor->minDelay,
 				context[i].sensor->maxDelay,
 				context[i].sensor->flags);
@@ -406,7 +408,7 @@ void NativeSensorManager::compositeVirtualSensorName(const char *sensor_name, ch
 }
 
 int NativeSensorManager::getDataInfo() {
-	int i, j;
+	int i;
 	struct SensorContext *list;
 	int has_acc = 0;
 	int has_compass = 0;
@@ -459,7 +461,7 @@ int NativeSensorManager::getDataInfo() {
 				has_proximity = 1;
 #if defined(SENSORS_DEVICE_API_VERSION_1_3)
 				/* reporting mode fix up */
-				list->sensor->flags |= SENSOR_FLAG_WAKE_UP | SENSOR_FLAG_ON_CHANGE_MODE;
+				list->sensor->flags |= SENSOR_FLAG_ON_CHANGE_MODE;
 #endif
 				list->driver = new ProximitySensor(list);
 				sensor_proximity = *(list->sensor);
@@ -473,11 +475,6 @@ int NativeSensorManager::getDataInfo() {
 				list->driver = new LightSensor(list);
 				sensor_light = *(list->sensor);
 				break;
-			case SENSOR_TYPE_GYROSCOPE:
-				has_gyro = 1;
-				list->driver = new GyroSensor(list);
-				sensor_gyro = *(list->sensor);
-				break;
 			default:
 				list->driver = NULL;
 				ALOGE("No handle %d for this type sensor!", i);
@@ -490,9 +487,6 @@ int NativeSensorManager::getDataInfo() {
 	 * or pseudo sensors. These sensors are required by some of the applications.
 	 * Here we check the CalibratoinManager to decide whether to enable them.
 	 */
-	CalibrationManager &cm(CalibrationManager::getInstance());
-	struct SensorRefMap *ref;
-	char *chip;
 
 	if (has_light && has_proximity) {
 		compositeVirtualSensorName(sensor_proximity.name, virtualSensorName[POCKET], SENSOR_TYPE_POCKET);
@@ -616,7 +610,6 @@ int NativeSensorManager::getDataInfo() {
 int NativeSensorManager::registerListener(struct SensorContext *hw, struct SensorContext *virt)
 {
 	struct listnode *node;
-	struct SensorContext *ctx;
 	struct SensorRefMap *item;
 
 	list_for_each(node, &hw->listener) {
@@ -640,7 +633,6 @@ int NativeSensorManager::unregisterListener(struct SensorContext *hw, struct Sen
 {
 	struct listnode *node;
 	struct listnode *n;
-	struct SensorContext *ctx;
 	struct SensorRefMap *item;
 
 	list_for_each_safe(node, n, &hw->listener) {
@@ -663,7 +655,6 @@ int NativeSensorManager::getSensorList(const sensor_t **list) {
 }
 
 int NativeSensorManager::getNode(char *buf, char *path, const struct SysfsMap *map) {
-	char * fret;
 	ssize_t len = 0;
 	int fd;
 	char tmp[SYSFS_MAXLEN];
@@ -793,7 +784,7 @@ int NativeSensorManager::getEventPath(const char *sysfs_path, char *event_path)
 
 	dir = opendir(sysfs_path);
 	if (dir == NULL) {
-		ALOGE("open %s failed.(%s)\n", strerror(errno));
+		ALOGE("open %s failed.(%s)\n", sysfs_path, strerror(errno));
 		return -1;
 	}
 
@@ -911,11 +902,8 @@ int NativeSensorManager::getSensorListInner()
 int NativeSensorManager::activate(int handle, int enable)
 {
 	SensorContext *list;
-	int i;
-	int number = getSensorCount();
 	int err = 0;
 	struct listnode *node;
-	struct SensorContext *ctx;
 	struct SensorRefMap *item;
 
 	ALOGD("activate called handle:%d enable:%d", handle, enable);
@@ -1021,7 +1009,7 @@ int NativeSensorManager::syncDelay(int handle)
 			min_ns = ctx->delay_ns;
 	}
 
-	ALOGD("%s calling driver setDelay %d ms\n", list->sensor->name, min_ns / 1000000);
+	ALOGD("%s calling driver setDelay %" PRId64 " ms\n", list->sensor->name, min_ns / 1000000);
 	return list->driver->setDelay(list->sensor->handle, min_ns);
 }
 
@@ -1055,7 +1043,7 @@ int NativeSensorManager::syncLatency(int handle)
 	}
 
 	if (list->sensor->fifoMaxEventCount) {
-		ALOGD("%s calling driver setLatency %d ms\n", list->sensor->name, min_ns / 1000000);
+		ALOGD("%s calling driver setLatency %" PRId64 " ms\n", list->sensor->name, min_ns / 1000000);
 		list->driver->setLatency(list->sensor->handle, min_ns);
 	}
 
@@ -1065,12 +1053,11 @@ int NativeSensorManager::syncLatency(int handle)
 int NativeSensorManager::setDelay(int handle, int64_t ns)
 {
 	SensorContext *list;
-	int i;
 	int64_t delay = ns;
 	struct SensorRefMap *item;
 	struct listnode *node;
 
-	ALOGD("setDelay called handle:%d sample_ns:%lld", handle, ns);
+	ALOGD("setDelay called handle:%d sample_ns:%" PRId64, handle, ns);
 
 	list = getInfoByHandle(handle);
 	if (list == NULL) {
@@ -1105,9 +1092,7 @@ int NativeSensorManager::setDelay(int handle, int64_t ns)
 int NativeSensorManager::readEvents(int handle, sensors_event_t* data, int count)
 {
 	const SensorContext *list;
-	int i, j;
-	int number = getSensorCount();
-	int nb;
+	int j, nb;
 	struct listnode *node;
 	struct SensorRefMap *item;
 
@@ -1142,7 +1127,7 @@ int NativeSensorManager::batch(int handle, int64_t sample_ns, int64_t latency_ns
 	struct listnode *node;
 	struct SensorRefMap *item;
 
-	ALOGD("batch called handle:%d sample_ns:%lld latency_ns:%lld", handle, sample_ns, latency_ns);
+	ALOGD("batch called handle:%d sample_ns:%" PRId64 " latency_ns:%" PRId64, handle, sample_ns, latency_ns);
 
 	if ((latency_ns != 0) && (latency_ns < sample_ns)) {
 		ALOGE("latency_ns is smaller than sample_ns");
@@ -1227,40 +1212,9 @@ int NativeSensorManager::hasPendingEvents(int handle)
 	return list->driver->hasPendingEvents();
 }
 
-int NativeSensorManager::calibrate(int handle, struct cal_cmd_t *para)
-{
-	const SensorContext *list;
-	struct cal_result_t cal_result;
-	sensors_XML& sensor_XML(sensors_XML :: getInstance());
-	int err;
-
-	list = getInfoByHandle(handle);
-	if(list == NULL) {
-		ALOGE("Invalid handle(%d)", handle);
-		return -EINVAL;
-	}
-	sensor_XML.sensors_rm_file();
-	memset(&cal_result, 0, sizeof(cal_result));
-	err = list->driver->calibrate(handle, para, &cal_result);
-	if (err < 0) {
-		ALOGE("calibrate %s sensor error\n", list->sensor->name);
-		return err;
-	}
-	if (!para->save) {
-		return err;
-	}
-	err = sensor_XML.write_sensors_params(list->sensor, &cal_result, CAL_STATIC);
-	if (err < 0) {
-		ALOGE("write calibrate %s sensor error\n", list->sensor->name);
-		return err;
-	}
-	return err;
-}
-
 int NativeSensorManager::initCalibrate(const SensorContext *list)
 {
 	struct cal_result_t cal_result;
-	sensors_XML& sensor_XML(sensors_XML :: getInstance());
 	int err = 0;
 
 	if(list == NULL) {
@@ -1268,10 +1222,43 @@ int NativeSensorManager::initCalibrate(const SensorContext *list)
 		return -EINVAL;
 	}
 	memset(&cal_result, 0, sizeof(cal_result));
-	err = sensor_XML.read_sensors_params(list->sensor, &cal_result, CAL_STATIC);
+
+	if (!mCalibrationDataInitialized) {
+	    int fd = open("/data/opponvitems/50049", O_RDONLY);
+	    if (fd < 0) {
+		err = -errno;
+	    } else {
+		ssize_t readBytes = read(fd, &mCalibrationData, sizeof(mCalibrationData));
+		if (readBytes < 0) {
+		    err = -errno;
+		} else if (readBytes != sizeof(mCalibrationData)) {
+		    err = -EIO;
+		} else {
+		    mCalibrationDataInitialized = true;
+		}
+	    }
+	}
 	if (err < 0) {
-		ALOGE("read %s calibrate params error\n", list->sensor->name);
+		ALOGE("read %s calibrate params error: %d", list->sensor->name, err);
 		return err;
+	}
+
+	switch (list->sensor->type) {
+	    case SENSOR_TYPE_ACCELEROMETER:
+		if (!mCalibrationData.accelCalibOk) {
+		    return 0;
+		}
+		// OPPO's data was generated against a scaling of 1024/G, while the kernel
+		// driver now operates at 16384/G, so we need to scale up that data
+		cal_result.offset_x = 16 * (int16_t) ntohs(mCalibrationData.accelOffset_be16[0]);
+		cal_result.offset_y = 16 * (int16_t) ntohs(mCalibrationData.accelOffset_be16[1]);
+		cal_result.offset_z = 16 * (int16_t) ntohs(mCalibrationData.accelOffset_be16[2]);
+		break;
+	    case SENSOR_TYPE_PROXIMITY:
+		cal_result.offset[0] = (int16_t) ntohs(mCalibrationData.proxOffset_be16);
+		break;
+	    default:
+		return 0;
 	}
 
 	err = list->driver->initCalibrate(list->sensor->handle, &cal_result);

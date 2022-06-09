@@ -62,8 +62,6 @@ CompassSensor::CompassSensor(struct SensorContext *context)
 	  mEnabledTime(0),
 	  res(CONVERT_MAG)
 {
-	int handle = -1;
-
 	res = context->sensor->resolution;
 
 	memset(mPendingEvent.data, 0, sizeof(mPendingEvent.data));
@@ -227,7 +225,7 @@ again:
 						raw = mPendingEvent;
 
 						if (algo != NULL) {
-							if (algo->methods->convert(&raw, &result, NULL)) {
+							if (algo->methods->convert(&raw, &result)) {
 								ALOGE("Calibration failed.");
 								result.magnetic.x = CALIBRATE_ERROR_MAGIC;
 								result.magnetic.y = CALIBRATE_ERROR_MAGIC;

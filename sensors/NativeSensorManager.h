@@ -46,11 +46,9 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "LightSensor.h"
 #include "ProximitySensor.h"
 #include "CompassSensor.h"
-#include "GyroSensor.h"
 #include "VirtualSensor.h"
 
 #include "sensors_extension.h"
-#include "sensors_XML.h"
 using namespace android;
 
 #define EVENT_PATH "/dev/input/"
@@ -108,6 +106,14 @@ struct SensorRefMap {
 	struct SensorContext *ctx;
 };
 
+struct OppoCalibrationData {
+	uint8_t unknown1[17];
+	uint8_t accelCalibOk;
+	int16_t accelOffset_be16[3];
+	int16_t proxOffset_be16;
+	uint8_t unknown2[5];
+} __attribute__((packed));
+
 class NativeSensorManager : public Singleton<NativeSensorManager> {
 	friend class Singleton<NativeSensorManager>;
 	NativeSensorManager();
@@ -122,6 +128,8 @@ class NativeSensorManager : public Singleton<NativeSensorManager> {
 	int mSensorCount;
 	bool mScanned;
 	int mEventCount;
+	OppoCalibrationData mCalibrationData;
+	bool mCalibrationDataInitialized;
 
 	DefaultKeyedVector<int32_t, struct SensorContext*> type_map;
 	DefaultKeyedVector<int32_t, struct SensorContext*> handle_map;
@@ -151,7 +159,6 @@ public:
 	int setDelay(int handle, int64_t ns);
 	int syncLatency(int handle);
 	int readEvents(int handle, sensors_event_t *data, int count);
-	int calibrate(int handle, struct cal_cmd_t *para);
 	int batch(int handle, int64_t sample_ns, int64_t latency_ns);
 	int flush(int handle);
 };

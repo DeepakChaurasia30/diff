@@ -234,31 +234,25 @@ int ProximitySensor::readEvents(sensors_event_t* data, int count)
                 }
             }
         } else if (type == EV_SYN) {
-                switch ( event->code ){
+                switch ( event->code ) {
                         case SYN_TIME_SEC:
-                                {
-                                        mUseAbsTimeStamp = true;
-                                        report_time = event->value * 1000000000LL;
-                                }
-                        break;
+                                mUseAbsTimeStamp = true;
+                                report_time = event->value * 1000000000LL;
+                                break;
                         case SYN_TIME_NSEC:
-                                {
-                                        mUseAbsTimeStamp = true;
-                                        mPendingEvent.timestamp = report_time + event->value;
-                                }
-                        break;
+                                mUseAbsTimeStamp = true;
+                                mPendingEvent.timestamp = report_time + event->value;
+                                break;
                         case SYN_REPORT:
-                                {
-                                        if(mUseAbsTimeStamp != true) {
-                                                mPendingEvent.timestamp = timevalToNano(event->time);
-                                        }
-                                        if (mEnabled) {
-                                                *data++ = mPendingEvent;
-                                                count--;
-                                                numEventReceived++;
-                                        }
+                                if(mUseAbsTimeStamp != true) {
+                                        mPendingEvent.timestamp = timevalToNano(event->time);
                                 }
-                        break;
+                                if (mEnabled) {
+                                        *data++ = mPendingEvent;
+                                        count--;
+                                        numEventReceived++;
+                                }
+                                break;
                 }
         } else {
             ALOGE("ProximitySensor: unknown event (type=%d, code=%d)",
@@ -354,48 +348,25 @@ int ProximitySensor::calibrate(int32_t, struct cal_cmd_t *para,
 
 int ProximitySensor::initCalibrate(int32_t, struct cal_result_t *cal_result)
 {
-        int fd , i, err;
-        char buf[LENGTH];
-        int arry[] = {CMD_W_THRESHOLD_H, CMD_W_THRESHOLD_L, CMD_W_BIAS};
+    int fd, err;
+    char buf[LENGTH];
 
-        if (cal_result == NULL) {
-                ALOGE("Null pointer initcalibrate parameter\n");
-                return -1;
-        }
-        strlcpy(&input_sysfs_path[input_sysfs_path_len],
-                        SYSFS_CALIBRATE, SYSFS_MAXLEN);
-        fd = open(input_sysfs_path, O_RDWR);
-        if (fd >= 0) {
-                int temp, para1 = 0;
-                for(i = 0; i < (int)ARRAY_SIZE(arry); ++i) {
-                        para1 = SET_CMD_H(cal_result->offset[i], arry[i]);
-                        snprintf(buf, sizeof(buf), "%d",
-                                        para1);
-                        err = write(fd, buf, strlen(buf)+1);
-                        if(err < 0) {
-                                ALOGE("write error\n");
-                                close(fd);
-                                return err;
-                        }
-
-                        memset(buf, 0, sizeof(buf));
-                        para1 = SET_CMD_L(cal_result->offset[i], arry[i]);
-                        snprintf(buf, sizeof(buf), "%d",
-                                        para1);
-                        write(fd, buf, strlen(buf)+1);
-                        if(err < 0) {
-                                ALOGE("write error\n");
-                                close(fd);
-                                return err;
-                        }
-
-                }
-                memset(buf, 0, sizeof(buf));
-                snprintf(buf, sizeof(buf), "%d", CMD_COMPLETE);
-                write(fd, buf, strlen(buf)+1);
-                close(fd);
-                return 0;
-        }
-        ALOGE("open %s error\n", input_sysfs_path);
+    if (cal_result == NULL) {
+        ALOGE("Null pointer initcalibrate parameter\n");
         return -1;
+    }
+    fd = open("/sys/oppo_ftm/als_prox/calibration", O_WRONLY);
+    if (fd >= 0) {
+        snprintf(buf, sizeof(buf), "%d", cal_result->offset[0]);
+        err = write(fd, buf, strlen(buf)+1);
+        if(err < 0) {
+            ALOGE("write error\n");
+            close(fd);
+            return err;
+        }
+        close(fd);
+        return 0;
+    }
+    ALOGE("proximity sensor calibration file open error: %d", -errno);
+    return -1;
 }
